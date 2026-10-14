@@ -1,0 +1,34 @@
+name: Crea APK Baila
+on: [push, workflow_dispatch]
+permissions: {contents: write}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Estrai progetto
+        run: unzip -q Baila_Android_Progetto.zip -d android
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: '8.10.2'}
+      - name: Prepara Android SDK
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER" || { echo "SDK Manager non trovato"; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Crea app Android
+        run: gradle -p android --no-daemon :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Baila-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Rendi APK disponibile come download
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          gh release create v1.0.0-prova "$apk#Baila_Dance_School.apk" --title "Baila Dance School - Prova Android" --notes "Prima versione Android di prova. Importare i propri file audio nell'app." || gh release upload v1.0.0-prova "$apk#Baila_Dance_School.apk" --clobber
