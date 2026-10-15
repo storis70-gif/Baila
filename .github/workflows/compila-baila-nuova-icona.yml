@@ -1,0 +1,49 @@
+name: Baila - APK NUOVA ICONA
+on:
+  push:
+    paths:
+      - '.github/workflows/compila-baila-nuova-icona.yml'
+      - 'Baila_Android_Progetto-1.zip'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preleva i file
+        uses: actions/checkout@v4
+      - name: Verifica progetto con nuova icona
+        shell: bash
+        run: |
+          test -f Baila_Android_Progetto-1.zip || { echo 'Il progetto nuovo non e stato trovato'; exit 1; }
+          unzip -p Baila_Android_Progetto-1.zip app/src/main/AndroidManifest.xml | grep -q '@mipmap/ic_launcher' || { echo 'Icona non definita nel manifest'; exit 1; }
+          unzip -p Baila_Android_Progetto-1.zip app/build.gradle | grep -q 'versionCode 2' || { echo 'Il progetto nuovo non sembra essere la versione 1.1'; exit 1; }
+          mkdir android
+          unzip -q Baila_Android_Progetto-1.zip -d android
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Compila APK con icona nuova
+        run: gradle -p android --no-daemon :app:assembleDebug
+      - name: Pubblica file APK del nuovo progetto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Baila-NUOVA-ICONA-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Pubblica release DIFFERENTE da quella vecchia
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          gh release create v1.1-icona-nuova "$apk#Baila_Dance_School_ICONA_NUOVA.apk" --title 'BAILA - NUOVA ICONA 1.1' --notes 'APK sperimentale con icona personalizzata Baila. ATTENZIONE: non disinstallare la vecchia app senza prima salvare i tuoi MP3: le chiavi di firma delle build debug potrebbero differire.' || gh release upload v1.1-icona-nuova "$apk#Baila_Dance_School_ICONA_NUOVA.apk" --clobber
