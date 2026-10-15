@@ -1,0 +1,84 @@
+name: BAILA 2.0 - APK ICONA PERSONALIZZATA CORRETTA
+
+on:
+  push:
+    paths:
+      - '.github/workflows/BAILA_ICONA_ROSSA_2_CORRETTA.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-nuova-icona:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prendi il progetto Baila
+        uses: actions/checkout@v4
+
+      - name: Ricostruisci il progetto originale Baila 2.0
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          src = Path('.github/workflows/BAILA_COMPILA_DA_ZERO.yml').read_text(encoding='utf-8')
+          parts = []
+          for i in range(1, 11):
+              opening = f"BAILA_DATA_{i}'\n"
+              closing = f"\n          BAILA_DATA_{i}"
+              if opening not in src:
+                  raise RuntimeError(f'Parte {i} del progetto Baila non trovata')
+              fragment = src.split(opening, 1)[1].split(closing, 1)[0]
+              parts.append(''.join(fragment.split()))
+          Path('baila_source.zip').write_bytes(base64.b64decode(''.join(parts), validate=True))
+          PY
+          mkdir -p source
+          unzip -q baila_source.zip -d source
+          test -f source/app/src/main/AndroidManifest.xml
+
+      - name: Prepara Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepara Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Prepara Android SDK con metodo funzionante
+        shell: bash
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -x "$SDKMANAGER" || { echo 'Android SDK Manager non trovato'; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Compila APK della Baila 2.0
+        run: gradle -p source --no-daemon :app:assembleDebug
+
+      - name: Salva APK personalizzata
+        uses: actions/upload-artifact@v4
+        with:
+          name: BAILA-2-ICONA-PERSONALIZZATA
+          path: source/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Pubblica APK scaricabile
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          apk='source/app/build/outputs/apk/debug/app-debug.apk#Baila_Dance_School_2_ICONA_PERSONALIZZATA.apk'
+          if gh release view baila-nuova-2 >/dev/null 2>&1; then
+            gh release upload baila-nuova-2 "$apk" --clobber
+          else
+            gh release create baila-nuova-2 "$apk" --title 'Baila Dance School 2.0 - Icona personalizzata' --notes 'Build progetto Baila 2.0 con icona personalizzata.'
+          fi
