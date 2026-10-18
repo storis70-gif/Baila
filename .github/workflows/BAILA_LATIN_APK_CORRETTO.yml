@@ -1,0 +1,76 @@
+name: Baila Latin - APK corretto
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/BAILA_LATIN_APK_CORRETTO.yml'
+      - 'Baila_Latin_Progetto_Android.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  build-latin:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Scarica il progetto
+        uses: actions/checkout@v4
+
+      - name: Estrai e verifica Baila Latin
+        shell: bash
+        run: |
+          mkdir -p android
+          unzip -q Baila_Latin_Progetto_Android.zip -d android
+          test -f android/app/src/main/assets/index.html
+          grep -q 'it.bailadanceschool.latin' android/app/build.gradle
+          grep -q 'Baila Latin' android/app/src/main/res/values/strings.xml
+          test -f android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+      - name: Prepara Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepara Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Prepara Android SDK senza il vecchio pacchetto tools
+        shell: bash
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -x "$SDKMANAGER" || { echo 'sdkmanager non trovato'; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Compila Baila Latin
+        run: gradle -p android --no-daemon :app:assembleDebug
+
+      - name: Controlla APK
+        run: test -s android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Salva APK da scaricare
+        uses: actions/upload-artifact@v4
+        with:
+          name: Baila-Latin-APK-CORRETTO
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Pubblica APK in Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          apk='android/app/build/outputs/apk/debug/app-debug.apk#Baila_Latin.apk'
+          if gh release view baila-latin-v1.0 >/dev/null 2>&1; then
+            gh release upload baila-latin-v1.0 "$apk" --clobber
+          else
+            gh release create baila-latin-v1.0 "$apk" --title 'Baila Latin - App Android' --notes 'Seconda app Baila Latin distinta da Baila Dance School.'
+          fi
