@@ -1,0 +1,327 @@
+name: "Baila Standard V3 - nomi MP3 e ordine tasti"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/BAILA_STANDARD_V3.yml'
+      - 'Baila_Latin_Progetto_Android.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  build-standard-v2:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Prendi il progetto Baila senza modificare Baila Latin
+        uses: actions/checkout@v4
+
+      - name: Crea Baila Standard V3 con nomi separati e tasti spostabili
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android
+          unzip -q Baila_Latin_Progetto_Android.zip -d android
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('android/app')
+          gradle = root / 'build.gradle'
+          source = gradle.read_text(encoding='utf-8')
+          pattern = r'(\bapplicationId\s*=?\s*["\x27])it\.bailadanceschool\.latin(["\x27])'
+          converted, count = re.subn(pattern, r'\g<1>it.bailadanceschool.standard\g<2>', source)
+          if count != 1:
+              raise SystemExit('Sicurezza: applicationId Latin non trovato esattamente una volta.')
+          gradle.write_text(converted, encoding='utf-8')
+
+          labels = root / 'src/main/res/values/strings.xml'
+          original_labels = labels.read_text(encoding='utf-8')
+          if 'Baila Latin' not in original_labels:
+              raise SystemExit('Il nome originale Baila Latin non è presente in strings.xml')
+          labels.write_text(original_labels.replace('Baila Latin', 'Baila Standard'), encoding='utf-8')
+
+          html = root / 'src/main/assets/index.html'
+          page = html.read_text(encoding='utf-8')
+          page = page.replace('Baila Latin', 'Baila Standard').replace('BAILA LATIN', 'BAILA STANDARD').replace('PAD LATIN', 'PAD STANDARD')
+
+          def replace_once(old, new, meaning):
+              global page
+              occurrences = page.count(old)
+              if occurrences != 1:
+                  raise SystemExit(f'{meaning}: trovate {occurrences} occorrenze, attesa 1. Il progetto originale è cambiato.')
+              page = page.replace(old, new, 1)
+
+          # La nuova associazione MP3 assegna SEMPRE al tasto il nome del file
+          # senza estensione, senza toccare il file reale.
+          replace_once(
+              "if(pd.name==='Tasto '+(p+1))pd.name=file.name.replace(/\\.[^.]+$/,'').slice(0,110);",
+              "pd.name=file.name.replace(/\\.[^.]+$/,'');",
+              'Rinomina automatica del tasto')
+
+          # La rinomina manuale del tasto modifica solo pd.name;
+          # pd.fileName conserva sempre il nome vero del file MP3.
+          replace_once(
+              'async function playPad(c,p){const pd=slot(c,p);',
+              "async function playPad(c,p){const pd=slot(c,p);const songName=pd.fileName?pd.fileName.replace(/\\.[^.]+$/,''):pd.name;",
+              'Lettura del nome originale MP3')
+          replace_once(
+              "showStatus('CARICAMENTO '+pd.name)",
+              "showStatus('CARICAMENTO '+songName)",
+              'Stato di caricamento')
+          replace_once(
+              "$('track').textContent=state.columns[c].name+' · '+pd.name;",
+              "$('track').textContent=state.columns[c].name+' · '+songName;",
+              'Riga del brano in riproduzione')
+          replace_once(
+              "showStatus('IN RIPRODUZIONE • '+pd.name)",
+              "showStatus('IN RIPRODUZIONE • '+songName)",
+              'Stato di riproduzione')
+
+          # Aggiunge il pulsante di riordino senza cambiare i controlli esistenti.
+          replace_once(
+              '<button class="ctrl save" id="saveBtn" type="button">',
+              '<button class="ctrl reorder" id="reorderBtn" type="button">↕ Riordina</button>\n    <button class="ctrl save" id="saveBtn" type="button">',
+              'Pulsante Riordina')
+
+          replace_once('</style>', r"""
+          .ctrl.reorder.active{background:#81591f;border-color:#ffc65c}
+          .pad.reorder-mode{touch-action:none!important;user-select:none;-webkit-user-select:none;cursor:grab;outline:1px dashed #e6b862;outline-offset:1px}
+          .pad.reorder-source{background:linear-gradient(180deg,#7c541c,#4b341e);border:2px solid #ffe088!important}
+          .pad.reorder-target{background:linear-gradient(180deg,#107a78,#155452);border:2px solid #8fffe8!important;box-shadow:0 0 12px #50f5c0aa}
+          </style>""", 'Stile riordino a trascinamento')
+
+          replace_once(
+              'id="hint">Premi',
+              'id="hint">Per cambiare ordine premi <b>↕ Riordina</b>, trascina un tasto su un altro nella stessa colonna (oppure tocca prima il tasto e poi la destinazione). Premi <b>Fine riordino</b> per tornare alla musica. Premi',
+              'Istruzioni riordino')
+
+          # audioKey è una chiave persistente, distinta dalla posizione del pulsante.
+          # Alla prima installazione corrisponde alla vecchia posizione: 1..120.
+          # Le precedenti associazioni salvate in IndexedDB restano recuperabili.
+          replace_once(
+              "({name:'Tasto '+(p+1),fileName:'',size:0,hasAudio:false})",
+              "({name:'Tasto '+(p+1),fileName:'',size:0,hasAudio:false,audioKey:c*COUNT+p+1})",
+              'Chiave MP3 persistente nel tasto')
+          replace_once(
+              'x.hasAudio=!!pd.hasAudio',
+              'x.hasAudio=!!pd.hasAudio;x.audioKey=Number.isInteger(pd.audioKey)?pd.audioKey:id(c,p)',
+              'Ripristino chiavi MP3 precedenti')
+
+          # Ogni operazione sul brano usa la chiave permanente e non l'indice
+          # corrente della griglia, che cambia quando si trascina un tasto.
+          replace_once(
+              'const n=id(c,p);const dupe=findDuplicate(file,n);',
+              'const n=slot(c,p).audioKey;const dupe=findDuplicate(file,n);',
+              'Associazione file con chiave stabile')
+          replace_once(
+              'if(id(c,p)!==n&&slot(c,p).hasAudio',
+              'if(slot(c,p).audioKey!==n&&slot(c,p).hasAudio',
+              'Verifica MP3 doppioni')
+          replace_once(
+              'await removeAudio(id(c,p));',
+              'await removeAudio(pd.audioKey);',
+              'Rimozione del MP3 corretto')
+          replace_once(
+              'await getAudio(id(c,p))',
+              'await getAudio(pd.audioKey)',
+              'Riproduzione del MP3 corretto')
+
+          # Gli eventi Pointer funzionano anche con le dita sul tablet Android.
+          # In modalita riordino non parte la musica per errore.
+          # Spostiamo l'oggetto pad (nome, fileName, audioKey), NON le blob IndexedDB.
+          reorder_js = r"""
+          let reorderMode=false, reorderSelected=null, reorderPointer=null;
+          function reorderPad(c,from,to){
+            if(from===to||from<0||to<0||from>=COUNT||to>=COUNT)return;
+            const pads=state.columns[c].pads;
+            const activeKey=selected&&selected.c===c?slot(c,selected.p).audioKey:null;
+            const pickedKey=fileTarget&&fileTarget.c===c?slot(c,fileTarget.p).audioKey:null;
+            const [moved]=pads.splice(from,1);
+            pads.splice(to,0,moved);
+            if(activeKey!==null)selected.p=pads.findIndex(x=>x.audioKey===activeKey);
+            if(pickedKey!==null)fileTarget.p=pads.findIndex(x=>x.audioKey===pickedKey);
+            reorderSelected=null;
+            saveSettings();
+            render();
+            showStatus('ORDINE TASTI SALVATO');
+            toast('Tasto spostato; il suo MP3 resta collegato');
+          }
+          function clearReorderMark(){
+            document.querySelectorAll('.pad.reorder-target').forEach(el=>el.classList.remove('reorder-target'));
+          }
+          function reorderDown(e,c,p,el){
+            if(!reorderMode||e.button!==0)return;
+            e.preventDefault();
+            reorderPointer={c,p,x:e.clientX,y:e.clientY,moved:false,target:null};
+            el.setPointerCapture?.(e.pointerId);
+            el.classList.add('reorder-source');
+          }
+          function reorderMove(e){
+            if(!reorderMode||!reorderPointer)return;
+            const d=reorderPointer;
+            if(Math.hypot(e.clientX-d.x,e.clientY-d.y)>9)d.moved=true;
+            if(!d.moved)return;
+            e.preventDefault();
+            clearReorderMark();
+            const el=document.elementFromPoint(e.clientX,e.clientY)?.closest('.pad');
+            if(el&&Number(el.dataset.c)===d.c){
+              d.target=Number(el.dataset.p);
+              if(d.target!==d.p)el.classList.add('reorder-target');
+            }else d.target=null;
+          }
+          function reorderUp(e){
+            if(!reorderMode||!reorderPointer)return;
+            const d=reorderPointer;
+            reorderPointer=null;
+            clearReorderMark();
+            if(d.moved){
+              reorderSelected=null;
+              if(d.target!==null&&d.target!==d.p){reorderPad(d.c,d.p,d.target);return;}
+              render();return;
+            }
+            if(reorderSelected&&reorderSelected.c===d.c&&reorderSelected.p!==d.p){
+              reorderPad(d.c,reorderSelected.p,d.p);return;
+            }
+            if(reorderSelected&&reorderSelected.c===d.c&&reorderSelected.p===d.p){
+              reorderSelected=null;toast('Selezione annullata');
+            }else{
+              reorderSelected={c:d.c,p:d.p};
+              toast('Ora tocca il tasto nella posizione desiderata');
+            }
+            render();
+          }
+          function reorderCancel(){
+            reorderPointer=null;clearReorderMark();
+            if(reorderMode)render();
+          }
+          $('reorderBtn').onclick=()=>{
+            reorderMode=!reorderMode;
+            reorderSelected=null;
+            reorderPointer=null;
+            if(reorderMode&&editMode){
+              editMode=false;
+              $('renameBtn').classList.remove('active');
+              $('renameBtn').textContent='✏️ Rinomina';
+            }
+            $('reorderBtn').classList.toggle('active',reorderMode);
+            $('reorderBtn').textContent=reorderMode?'✓ Fine riordino':'↕ Riordina';
+            render();
+            toast(reorderMode?'Trascina il tasto su un altro, oppure tocca partenza e arrivo':'Ordine salvato');
+          };
+          """
+          replace_once('function render(){',reorder_js+'\nfunction render(){','Funzioni riordino')
+
+          # Mantieni il tasto come controllo play nei modi normali; solo in
+          # modalita Riordina abilita trascina/tocca, su touch e mouse.
+          replace_once(
+              'btn.textContent=pd.name;',
+              "btn.dataset.c=c;btn.dataset.p=p;btn.classList.toggle('reorder-mode',reorderMode);btn.classList.toggle('reorder-source',!!reorderSelected&&reorderSelected.c===c&&reorderSelected.p===p);btn.textContent=pd.name;",
+              'Dati dei tasti per il trascinamento')
+          replace_once(
+              'btn.onclick=()=>editMode?editName(c,p):playPad(c,p);',
+              "btn.onclick=()=>{if(reorderMode)return;return editMode?editName(c,p):playPad(c,p)};btn.addEventListener('pointerdown',e=>reorderDown(e,c,p,btn));btn.addEventListener('pointermove',reorderMove);btn.addEventListener('pointerup',reorderUp);btn.addEventListener('pointercancel',reorderCancel);",
+              'Attivazione trascinamento dei tasti')
+          replace_once(
+              "pick.onclick=()=>{fileTarget={c,p};",
+              "pick.disabled=reorderMode;pick.onclick=()=>{fileTarget={c,p};",
+              'Sicurezza durante il riordino')
+          replace_once(
+              "$('renameBtn').onclick=()=>{editMode=!editMode;",
+              "$('renameBtn').onclick=()=>{if(!editMode&&reorderMode){reorderMode=false;reorderSelected=null;$('reorderBtn').classList.remove('active');$('reorderBtn').textContent='↕ Riordina'}editMode=!editMode;",
+              'Rinomina e riordino mutuamente esclusivi')
+
+          html.write_text(page, encoding='utf-8')
+          print('OK: Baila Standard V3, pulsanti rinominabili, nomi originali mostrati durante la riproduzione.')
+          PY
+
+      - name: Prepara Python per mantenere l'icona originale Baila Standard
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Usa l'icona Baila Standard originale con ballerini e font scuola
+        shell: bash
+        run: |
+          python3 -m pip install --quiet Pillow
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import re, base64, io
+          # Ricava l'immagine approvata dal workflow Standard precedente.
+          workflow = Path('.github/workflows/BAILA_STANDARD_APK.yml').read_text(encoding='utf-8')
+          found = re.search(r"\bdata='''(.*?)'''", workflow, re.DOTALL)
+          if not found:
+              raise SystemExit('Icona Baila Standard originale non trovata nel workflow precedente.')
+          encoded = ''.join(found.group(1).split())
+          picture = Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))).convert('RGBA')
+          resource = Path('android/app/src/main/res')
+          for density, size in [('mdpi',48),('hdpi',72),('xhdpi',96),('xxhdpi',144),('xxxhdpi',192)]:
+              folder = resource / ('mipmap-' + density)
+              folder.mkdir(parents=True, exist_ok=True)
+              pic = picture.resize((size, size), Image.Resampling.LANCZOS).convert('RGB')
+              pic.save(folder / 'ic_launcher.png')
+              pic.save(folder / 'ic_launcher_round.png')
+          adaptive = resource / 'mipmap-anydpi-v26'
+          if adaptive.exists():
+              for filename in ('ic_launcher.xml', 'ic_launcher_round.xml'):
+                  (adaptive / filename).unlink(missing_ok=True)
+          print('Icona Baila Standard originale conservata.')
+          PY
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Android SDK
+        shell: bash
+        run: |
+          set -e
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Compila l'APK Android Standard V2
+        run: gradle -p android --no-daemon :app:assembleDebug
+
+      - name: Verifica nome e identificativo dell'app
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/baila_standard_v3.txt
+          grep -q "package: name='it.bailadanceschool.standard'" /tmp/baila_standard_v3.txt
+          grep -q "application-label:'Baila Standard'" /tmp/baila_standard_v3.txt
+          cp "$apk" Baila_Standard_V3.apk
+
+      - name: Rendi scaricabile Baila Standard V3
+        uses: actions/upload-artifact@v4
+        with:
+          name: BAILA-STANDARD-V3-APK
+          path: Baila_Standard_V3.apk
+          if-no-files-found: error
+
+      - name: Pubblica APK in GitHub Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view baila-standard-v3.0 >/dev/null 2>&1; then
+            gh release upload baila-standard-v3.0 Baila_Standard_V3.apk --clobber
+          else
+            gh release create baila-standard-v3.0 Baila_Standard_V3.apk --title 'Baila Standard V3 - nomi MP3 e ordine tasti' --notes 'Tasti rinominabili: assegnando un nuovo MP3 il tasto assume il nome originale del brano, e la barra di riproduzione mostra sempre il nome del brano anche dopo una rinomina manuale.'
+          fi
