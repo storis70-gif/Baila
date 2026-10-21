@@ -43,7 +43,7 @@ jobs:
           labels.write_text(s.replace('Baila Latin','Baila Standard'),encoding='utf-8')
           html=Path('android/app/src/main/assets/index.html')
           h=html.read_text(encoding='utf-8')
-                    html.write_text(h.replace('Baila Latin','Baila Standard').replace('BAILA LATIN','BAILA STANDARD').replace('PAD LATIN','PAD STANDARD'),encoding='utf-8')
+          html.write_text(h.replace('Baila Latin','Baila Standard').replace('BAILA LATIN','BAILA STANDARD').replace('PAD LATIN','PAD STANDARD'),encoding='utf-8')
           print('Nuovo pacchetto: it.bailadanceschool.standard; originale intatto')
           PY
 
