@@ -1,0 +1,140 @@
+name: "Baila Latin V2 - nomi MP3 corretti"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/BAILA_LATIN_V2.yml'
+      - 'Baila_Latin_Progetto_Android.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  build-latin-v2:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Prendi il progetto originale Baila Latin
+        uses: actions/checkout@v4
+
+      - name: Crea Baila Latin V2 con nomi separati
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android
+          unzip -q Baila_Latin_Progetto_Android.zip -d android
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('android/app')
+          gradle = root / 'build.gradle'
+          build = gradle.read_text(encoding='utf-8')
+          if len(re.findall(r'\bapplicationId\s*=?\s*["\x27]it\.bailadanceschool\.latin["\x27]', build)) != 1:
+              raise SystemExit('Controllo di sicurezza: identificativo originale Baila Latin non trovato.')
+          # Mantieni lo stesso package di Baila Latin; NON diventa Baila Standard.
+          # Il file sorgente ZIP non viene modificato.
+
+          labels = root / 'src/main/res/values/strings.xml'
+          if 'Baila Latin' not in labels.read_text(encoding='utf-8'):
+              raise SystemExit('Controllo di sicurezza: nome Baila Latin assente dalle risorse.')
+          for suffix in ('mdpi','hdpi','xhdpi','xxhdpi','xxxhdpi'):
+              if not (root / f'src/main/res/mipmap-{suffix}/ic_launcher.png').is_file():
+                  raise SystemExit(f'Icona originale Baila Latin assente: {suffix}')
+
+          html = root / 'src/main/assets/index.html'
+          page = html.read_text(encoding='utf-8')
+
+          def replace_once(old, new, context):
+              global page
+              n = page.count(old)
+              if n != 1:
+                  raise SystemExit(f'{context}: trovate {n} occorrenze; attesa 1. Sorgente cambiato: fermo senza compilare.')
+              page = page.replace(old, new, 1)
+
+          # Ogni associazione di un nuovo MP3 assegna il nome del file al tasto,
+          # anche se il tasto era stato precedentemente rinominato a mano.
+          # Non si rinomina il file MP3 reale.
+          replace_once(
+              "if(pd.name==='Tasto '+(p+1))pd.name=file.name.replace(/\\.[^.]+$/,'').slice(0,110);",
+              "pd.name=file.name.replace(/\\.[^.]+$/,'');",
+              'Nome tasto alla scelta MP3')
+
+          # Il testo visualizzato durante la riproduzione deriva dal fileName
+          # salvato, mai dal nome personalizzato del tasto.
+          replace_once(
+              'async function playPad(c,p){const pd=slot(c,p);',
+              "async function playPad(c,p){const pd=slot(c,p);const songName=pd.fileName?pd.fileName.replace(/\\.[^.]+$/,''):pd.name;",
+              'Memorizzazione del nome originale del brano')
+          replace_once(
+              "showStatus('CARICAMENTO '+pd.name)",
+              "showStatus('CARICAMENTO '+songName)",
+              'Barra di caricamento')
+          replace_once(
+              "$('track').textContent=state.columns[c].name+' · '+pd.name;",
+              "$('track').textContent=state.columns[c].name+' · '+songName;",
+              'Riga della canzone in esecuzione')
+          replace_once(
+              "showStatus('IN RIPRODUZIONE • '+pd.name)",
+              "showStatus('IN RIPRODUZIONE • '+songName)",
+              'Stato esecuzione')
+
+          html.write_text(page, encoding='utf-8')
+          print('OK: Baila Latin V2. Tasto = nome file appena associato; barra = nome originale indipendente dalla rinomina.')
+          PY
+
+      - name: Prepara Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepara Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Prepara Android SDK
+        shell: bash
+        run: |
+          set -e
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -x "$SDKMANAGER" || { echo 'sdkmanager non trovato'; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Compila l'APK Android Baila Latin V2
+        run: gradle -p android --no-daemon :app:assembleDebug
+
+      - name: Verifica l'APK e il suo nome
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/baila_latin_v2.txt
+          grep -q "package: name='it.bailadanceschool.latin'" /tmp/baila_latin_v2.txt
+          grep -q "application-label:'Baila Latin'" /tmp/baila_latin_v2.txt
+          cp "$apk" Baila_Latin_V2.apk
+
+      - name: Rendi scaricabile Baila Latin V2
+        uses: actions/upload-artifact@v4
+        with:
+          name: BAILA-LATIN-V2-APK
+          path: Baila_Latin_V2.apk
+          if-no-files-found: error
+
+      - name: Pubblica APK Baila Latin V2 in Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view baila-latin-v2.0 >/dev/null 2>&1; then
+            gh release upload baila-latin-v2.0 Baila_Latin_V2.apk --clobber
+          else
+            gh release create baila-latin-v2.0 Baila_Latin_V2.apk --title 'Baila Latin V2 - nomi MP3 corretti' --notes 'Nuova associazione MP3: nome automatico sul tasto. La riga in riproduzione mostra sempre il nome originale del MP3 anche quando il tasto viene rinominato. Icona originale Baila Latin invariata.'
+          fi
